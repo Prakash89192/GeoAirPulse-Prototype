@@ -1,0 +1,159 @@
+GeoAir-Pulse — API Run Guide (Windows / PowerShell)
+=====================================================
+Save this file and follow top to bottom, in order, every time you want
+to start the project from scratch (e.g. after a reboot).
+
+
+STEP 0 — Open PowerShell and go to the project folder
+-------------------------------------------------------
+cd "D:\JP CERTIFICATES\IITK\after_Mtech\global_rising_50\project1\geoair-pulse\geoair-pulse"
+
+What it does:
+  Puts you inside the project root so every command below (which uses
+  relative paths like "api.main:app" or "frontend") resolves correctly.
+
+
+STEP 1 — Start the PostGIS database (Docker)
+-----------------------------------------------
+docker compose up -d db
+
+What it does:
+  Starts the PostGIS container in the background (-d = detached). This
+  is the database every other piece of the stack depends on — the API
+  cannot serve any real data without it running.
+
+Check it started correctly:
+  docker compose ps
+
+  You want to see STATUS = "Up X minutes (healthy)" for geoair_postgis.
+  If it's missing, unhealthy, or restarting — fix this before continuing,
+  nothing downstream will work.
+
+
+STEP 2 — Activate your Python virtual environment
+-----------------------------------------------------
+.venv\Scripts\Activate.ps1
+
+What it does:
+  Switches this PowerShell window to use the Python interpreter and
+  packages installed inside .venv (FastAPI, SQLAlchemy, psycopg2, etc.)
+  instead of your system Python. You should see "(.venv)" appear at the
+  start of your prompt once this works.
+
+  If PowerShell blocks this with an execution-policy error, run once:
+  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+  then retry the Activate.ps1 line above.
+
+
+STEP 3 — Confirm your .env points the API at the right database host
+--------------------------------------------------------------------
+Open .env in a text editor and confirm this line says "localhost",
+NOT "db":
+
+  DATABASE_URL=postgresql+psycopg2://geoair:geoair_pass@localhost:5432/geoair_pulse
+
+What it does:
+  "db" is the hostname Docker containers use to talk to each other
+  *inside* Docker's internal network. Your API is about to run directly
+  on Windows (outside that network), so it must use "localhost" to
+  reach the database container's exposed port instead.
+
+
+STEP 4 — Start the FastAPI backend
+---------------------------------------
+uvicorn api.main:app --reload --port 8000
+
+What it does:
+  Launches the FastAPI application defined in api/main.py, on port 8000.
+  --reload means it auto-restarts whenever you edit a Python file in
+  api/ — useful during development.
+
+  Leave this terminal window open and running. It will print incoming
+  request logs here. Closing the window stops the API.
+
+  Expected final log line looks like:
+  INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+
+
+STEP 5 — Verify the API is actually working (NEW terminal window)
+-----------------------------------------------------------------
+Open a SECOND PowerShell window (leave Step 4's window running) and run:
+
+  curl http://localhost:8000/api/v1/health
+
+What it does:
+  Hits the health-check endpoint directly. You should get back:
+  {"status":"ok","database":"ok"}
+
+  If "database" says "unreachable" instead of "ok" — go back to Step 1,
+  the API is running but can't reach Postgres.
+
+Then check there's actual data to visualize:
+
+  curl "http://localhost:8000/api/v1/grid-predictions?city=Delhi"
+
+What it does:
+  Returns the predicted PM2.5/LST grid as GeoJSON. If "features" is an
+  empty array [], the API itself is working fine — it just means the
+  grid-build / ingestion / model-training steps haven't been run yet
+  for "Delhi", so there's nothing to show yet. That's a data problem,
+  not an API problem.
+
+
+STEP 6 — Start the frontend (SAME second terminal window is fine)
+-------------------------------------------------------------------
+python -m http.server 8080 --directory frontend
+
+What it does:
+  Serves the static dashboard files (index.html, app.js) on port 8080.
+  This is a completely separate, lightweight server from the API — it
+  does NOT need the venv activated, since http.server has no external
+  dependencies.
+
+  IMPORTANT: This must run on a DIFFERENT port than the API (8080, not
+  8000). Running both on the same port causes one to silently fail or
+  the frontend's API calls to hit the wrong server.
+
+  Leave this terminal open too. Closing it stops the frontend server.
+
+
+STEP 7 — Open the dashboard in your browser
+------------------------------------------------
+Go to:  http://localhost:8080
+
+What it does:
+  Loads index.html, which in turn loads app.js. app.js calls the API
+  at http://localhost:8000/api/v1/... to fetch grid predictions and
+  renders them on the Mapbox/Deck.gl map.
+
+  NOT http://localhost:8000 — that port is the API only and will not
+  show the dashboard.
+
+
+SUMMARY — what's running where
+-----------------------------------
+  Terminal 1 (venv active):  uvicorn  -> API        -> port 8000
+  Terminal 2 (venv optional): http.server -> frontend -> port 8080
+  Docker (background):        PostGIS   -> database  -> port 5432
+
+  Browser tab open at:  http://localhost:8080
+
+
+IF SOMETHING BREAKS
+------------------------
+  - Blank map, "deck is not defined" in browser console (F12):
+      Deck.gl script tag failed to load — check index.html's <script>
+      tags load from a valid CDN URL (unpkg.com, not cdnjs for deck.gl).
+
+  - "database: unreachable" from /health:
+      docker compose ps   (confirm db container is Up and healthy)
+      docker compose logs db --tail 50
+
+  - Frontend loads but map stays empty / status says "err":
+      Open browser DevTools -> Network tab -> look for the call to
+      /api/v1/grid-predictions -> check its response. Empty "features"
+      array means no data for that city/date yet (re-run your ETL/ML
+      pipeline steps), not a bug in the API or frontend.
+
+  - "could not translate host name db":
+      .env still says @db instead of @localhost — fix Step 3.

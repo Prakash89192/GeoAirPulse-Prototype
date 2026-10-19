@@ -1,0 +1,39 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: geoair_postgis
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: geoair
+      POSTGRES_PASSWORD: geoair_pass   # override in prod via .env / secrets manager
+      POSTGRES_DB: geoair_pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - geoair_pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geoair -d geoair_pulse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+      build:
+        context: .
+        dockerfile: docker/Dockerfile.api
+      container_name: geoair_api
+      restart: unless-stopped
+      env_file: .env
+      environment:
+        - PYTHONPATH=/app
+      depends_on:
+        db:
+          condition: service_healthy
+      ports:
+        - "8050:8050"
+      volumes:
+        - .:/app
+
+volumes:
+  geoair_pgdata:
